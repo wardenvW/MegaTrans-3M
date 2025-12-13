@@ -25,7 +25,7 @@ class Megatrans:
         self.base_time = datetime.datetime.now()
 
         self.alarm: str = "NO"   # YES/NO
-        self.statuc_link: str = "UP" # UP/DOWN
+        self.status_link: str = "UP" # UP/DOWN
     
     def get_runs(self) -> str:
         time_delta = time.time() - self.boot_timestamp
@@ -164,95 +164,74 @@ class COM:
             return "Illegal parameter(s)!"
 
     def g826(self, *args) -> str:
+        if self.e1.crc4 and self.e1.ebit:
+            Err_perf_message = "CRC4      E-Bit"
+        elif self.e1.crc4:
+            Err_perf_message = "CRC4"
+        else:
+            Err_perf_message = "FAS"
+
+        zeros = "0000000000" if Err_perf_message == "FAS" else "0000000000  0000000000"
+        zeros += "\n"
+
         if not args:
             msg = (
-            "----------------------------------------------------------------------\n"
-            f"G.826 Error Perfomance   :    "
-            "CRC6\n"
-            "----------------------------------------------------------------------\n"
-            "Errored blocks           :  "
-            "0000000000\n"
-            "Severely errored seconds :  "
-            "0000000000\n"
-            "Background block errors  :  "
-            "0000000000\n"
-            "Available time           :  "
-            "0000000000\n"
-            "Unavailable time         :  "
-            "0000000000\n"
-            "----------------------------------------------------------------------")
+                "----------------------------------------------------------------------\n"
+                "G.826 Error Perfomance   :    CRC6\n"
+                "----------------------------------------------------------------------\n"
+                "Errored blocks           :  0000000000\n"
+                "Severely errored seconds :  0000000000\n"
+                "Background block errors  :  0000000000\n"
+                "Available time           :  0000000000\n"
+                "Unavailable time         :  0000000000\n"
+                "----------------------------------------------------------------------"
+            )
             return msg
         elif args == ("E1",):
-            if self.e1.crc4 == True and self.e1.ebit == True:
-                Err_perf_message = f"CRC4      E-Bit"
-            elif self.e1.crc4 == True and self.e1.ebit == False:
-                Err_perf_message = f"CRC4"
-            else:
-                Err_perf_message = "FAS"
-
             msg = (
-            "----------------------------------------------------------------------\n"
-            f"G.826 Error Perfomance   :    "
-            f"{Err_perf_message} \n"
-            "----------------------------------------------------------------------\n"
-            "Errored blocks           :  "
-            f"{"0000000000" if Err_perf_message == "FAS" else "0000000000  0000000000"} \n"
-            "Severely errored seconds :  "
-            "0000000000\n"
-            "Background block errors  :  "
-            "0000000000\n"
-            "Available time           :  "
-            "0000000000\n"
-            "Unavailable time         :  "
-            "0000000000\n"
-            "----------------------------------------------------------------------")
+                "----------------------------------------------------------------------\n"
+                f"G.826 Error Perfomance   :    {Err_perf_message}\n"
+                "----------------------------------------------------------------------\n"
+                f"Errored blocks           :  {zeros}"
+                f"Severely errored seconds :  {zeros}"
+                f"Background block errors  :  {zeros}"
+                f"Available time           :  {zeros}"
+                f"Unavailable time         :  {zeros}"
+                "----------------------------------------------------------------------"
+            )
             return msg
         elif args == ("C",):
             msg = (
-            "__CONTINUE__"
-            "----------------------------------------------------------------------\n"
-            f"G.826 Error Perfomance   :    "
-            "CRC6\n"
-            "----------------------------------------------------------------------\n"
-            "Errored blocks           :  "
-            "0000000000\n"
-            "Severely errored seconds :  "
-            "0000000000\n"
-            "Background block errors  :  "
-            "0000000000\n"
-            "Available time           :  "
-            "0000000000\n"
-            "Unavailable time         :  "
-            "0000000000\n"
-            "----------------------------------------------------------------------\n"
-            f"{self.message_prefix}")
+                "__CONTINUE__"
+                "----------------------------------------------------------------------\n"
+                "G.826 Error Perfomance   :    CRC6\n"
+                "----------------------------------------------------------------------\n"
+                "Errored blocks           :  0000000000\n"
+                "Severely errored seconds :  0000000000\n"
+                "Background block errors  :  0000000000\n"
+                "Available time           :  0000000000\n"
+                "Unavailable time         :  0000000000\n"
+                "----------------------------------------------------------------------\n"
+                f"{self.message_prefix}"
+            )
             return msg
         elif args == ("E1", "C"):
-            if self.e1.crc4 == True:
-                Err_perf_message = f"CRC4      E-Bit"
-            else:
-                Err_perf_message = "FAS"
             msg = (
-            "__CONTINUE__"
-            "----------------------------------------------------------------------\n"
-            f"G.826 Error Perfomance   :    "
-            f"{Err_perf_message} \n"
-            "----------------------------------------------------------------------\n"
-            "Errored blocks           :  "
-            f"{"0000000000" if Err_perf_message == "FAS" else "0000000000  0000000000"} \n"
-            "Severely errored seconds :  "
-            "0000000000\n"
-            "Background block errors  :  "
-            "0000000000\n"
-            "Available time           :  "
-            "0000000000\n"
-            "Unavailable time         :  "
-            "0000000000\n"
-            "----------------------------------------------------------------------\n"
-            f"{self.message_prefix}")
+                "__CONTINUE__"
+                "----------------------------------------------------------------------\n"
+                f"G.826 Error Perfomance   :    {Err_perf_message}\n"
+                "----------------------------------------------------------------------\n"
+                f"Errored blocks           :  {zeros}"
+                f"Severely errored seconds :  {zeros}"
+                f"Background block errors  :  {zeros}"
+                f"Available time           :  {zeros}"
+                f"Unavailable time         :  {zeros}"
+                "----------------------------------------------------------------------\n"
+                f"{self.message_prefix}"
+            )
             return msg
         else:
-            return "Illegal parameter(s)!\n!"
+            return "Illegal parameter(s)!\n"
     def reset_g826(self):
         pass
 
@@ -296,7 +275,7 @@ class COM:
         command_list = self.MENU_COMMANDS.get(self.menu, {})   
         if cmd in command_list:
             return command_list[cmd](*args)
-        return "Invalid command"
+        return "Invalid command!"
 
     def get_main_menu_text(self) -> str:
         return (
@@ -307,7 +286,7 @@ class COM:
             f"ID\n"
             f"RUNS{self.megatrans.get_runs()}\n"
             f"ALARM {self.megatrans.alarm}\n"
-            f"STATUS LINK {self.megatrans.statuc_link}\n"
+            f"STATUS LINK {self.megatrans.status_link}\n"
             f"MODEL_DESC {self.megatrans.model_desc}\n\n"
             "Copyright (C) 2006 by Nateks Ltd.\n\n"
             "------------- Main Menu -----------------\n"
@@ -337,11 +316,15 @@ class Terminal(tk.Toplevel):
         super().__init__(master)
         self.com = com
         self.settings: Dict["str": Any] = settings
+        
         self.input_start: str = "1.0"
         self.locked: bool = True
         self.sequence_index = 0
         self.sequence: List["str"] = ["%", "0", "1"]
+
         self.output_in_progress: bool = False
+        self.continue_mode: bool = False
+        self.continue_text = ""
 
         self.port_name = self.settings.get("port")
         self.baud_rate = self.settings.get("baud_rate")
@@ -411,7 +394,12 @@ class Terminal(tk.Toplevel):
         return self.text.get(self.input_start, "end-1c")
 
     def on_key(self, event):
-        if self.output_in_progress:
+        if self.continue_mode:
+            self.continue_mode = False
+        if hasattr(self, "repeat_id") and self.repeat_id:
+            self.after_cancel(self.repeat_id)
+            self.repeat_id = None
+            self.put_message_prefix()
             return "break"
 
         self.text.mark_set("insert", "end")
@@ -421,7 +409,6 @@ class Terminal(tk.Toplevel):
             char = event.char.upper()
             if not char or char.isspace():
                 return "break"
-
             if char == self.sequence[self.sequence_index]:
                 self.sequence_index += 1
                 if self.sequence_index == len(self.sequence):
@@ -432,14 +419,12 @@ class Terminal(tk.Toplevel):
                 self.sequence_index = 0
                 return "break"
 
-        char = event.char.upper()
+        char = event.char
         if char and char.isprintable():
-            self.text.insert("end", char)
+            self.text.insert("end", char.upper())
             self.text.see("end")
-            return "break"
-
         return "break"
-
+    
     def backspace(self, event):
         if self.locked:
             return "break"
@@ -449,23 +434,16 @@ class Terminal(tk.Toplevel):
         return "break"
     
     def wait_for_key_to_continue(self):
-        def unlock(event):
-            self.continue_mode = False 
-            self.text.unbind("<Key>", bind_id)
-            self.locked = False
-            self.put_message_prefix()
-
-        self.locked = True
-        bind_id = self.text.bind("<Key>", unlock)
+        self.continue_mode = True
 
     def repeat_output(self):
         if not self.continue_mode:
             return
         self.type_lines("\n" + self.continue_text + "\n")
-        self.after(CONTINUES_DELAY, self.repeat_output)
+        self.repeat_id = self.after(CONTINUES_DELAY, self.repeat_output)
 
     def enter(self, event):
-        if self.locked or self.output_in_progress:
+        if self.output_in_progress:
             return "break"
 
         cmd = self.get_input().strip()
@@ -478,16 +456,10 @@ class Terminal(tk.Toplevel):
 
         if resp.startswith("__CONTINUE__"):
             self.continue_text = resp.replace("__CONTINUE__", "").strip()
-            self.continue_mode = True
-
-
-            self.repeat_output()
-
-
             self.wait_for_key_to_continue()
+            self.repeat_output()
             return "break"
 
-        # --- обычный вывод ---
         self.type_lines("\n" + resp + "\n", done_callback=self.put_message_prefix)
         return "break"
 
