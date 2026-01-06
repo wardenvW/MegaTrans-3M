@@ -5,6 +5,7 @@ from models import E1, Ethernet, Nx64, xDSL
 from typing import Dict, Any, List
 import datetime
 import time
+import os
 from utils import help_func
 from types import MethodType
 
@@ -112,6 +113,12 @@ class COM:
         self.time: str = ""
         self.timers = G826time()
 
+        self.cts = "grey"   # red / grey / white
+        self.dsr = "red"
+        self.ri  = "red"
+        self.input_blocked = False
+        self.reset_required = False
+
         self.connected: bool = False
 
         self.service_interfaces = ["N"]
@@ -189,6 +196,8 @@ class COM:
             },
             "SM": {
                 "PSW": "",  #ДОДЕЛАТЬ
+                "CONNECT": self.connect_cmd,
+                "DISCONNECT": self.disconnect_cmd,
                 "M": self.back_to_main#                 
             }
         }
@@ -197,6 +206,34 @@ class COM:
                 menu_dict["H"] = MethodType(help_func, self)
 
     
+    def _set_reset_state(self):
+        self.cts = "red"
+        self.dsr = "grey"
+        self.ri  = "grey"
+
+        self.input_blocked = True
+        self.reset_required = True
+
+        self.timers.g826time.stop()
+        self.timers.g826time.start_unavail()
+
+    def _set_link_up_state(self):
+        self.cts = "grey"
+        self.dsr = "red"
+        self.ri  = "red"
+
+        self.input_blocked = False
+        self.reset_required = False
+
+        self.timers.g826time.stop()
+        self.timers.g826time.start_avail()
+
+    def _set_empty_state(self):
+        self.cts = "white"
+        self.dsr = "white"
+        self.ri  = "white"
+
+        self.input_blocked = True
 
     def loop1_func(self, *args) -> str:
         if len(args) != 2:
@@ -228,8 +265,11 @@ class COM:
         return msg
 
     def restart_func(self) -> str:
-        #ДОБАВИТЬ ВКЛЮЧЕНИЕ ЛАМПОЧКИ CTS(выключение DSR, RI)
+        self._set_reset_state()
 
+        time.sleep(2)
+
+        self._set_link_up_state()
         return "Restarting channel\n"
 
     def status_func(self) -> str:
@@ -582,7 +622,8 @@ class COM:
 
         if arg not in default_settings:
             return "Illegal parameter(s)!\n"
-
+        
+        self._set_reset_state()
         return default_settings[arg]()
 
     def pll_func(self, *args):
@@ -599,12 +640,13 @@ class COM:
             return "Invalid command!\n"
 
     def connect_cmd(self, *args):
-        app = self.app
-
         if not args or args[0] != "R":
             return "Illegal parameter(s)!\n"
 
-        return app.connection_manager.connect_auto(self)
+        if not (self.cts == "grey" and self.dsr == "red" and self.ri == "red"):
+            return "ERROR: Remote interface not ready\n"
+
+        return self.app.connection_manager.connect_auto(self)
 
     def disconnect_cmd(self):
         return self.app.connection_manager.disconnect(self)
@@ -933,22 +975,19 @@ class COM:
                 if self.role == "SLAVE":
                     self.role = "MASTER"
                     self.update_message_prefix()
-                    #СДЕЛАТЬ ВКЛЮЧЕНИЕ ЗВУКА ПЕРЕКЛЮЧЕНИЯ КНОПКИ А ТАКЖЕ ДОБАВИТЬ ЛОГИКУ РАБОТЫ С СВЕТОДИОДАМИ(зелёный-оранджевый и ТД)
+                    self._set_reset_state()
                 return None
+
             elif arg == "OFF":
                 if self.role == "MASTER":
                     self.role = "SLAVE"
-
-                    # корректно через метод
                     try:
                         self.nx64.set_clockdir("REMOTE")
                     except Exception:
-                        pass  # если нельзя — просто игнорируем
-
+                        pass
                     self.update_message_prefix()
+                    self._set_reset_state()
                 return None
-            else:
-                return "Illegal parameter(s)!\n"
         return "Invalid command!\n"
         
 
@@ -1377,6 +1416,7 @@ class COM:
 # Терминал
 # -------------------------------
 class Terminal(tk.Toplevel):
+    
     def __init__(self, master, com: COM, settings):
         super().__init__(master)
         self.com = com
@@ -1396,6 +1436,8 @@ class Terminal(tk.Toplevel):
         self.data_bits = self.settings.get("data_bits")
         self.parity = self.settings.get("parity")
         self.stop_bits = self.settings.get("stop_bits")
+        
+        self.com_config_valid: bool = True
 
 
         self.title(("{},{},{},{},{}").format(
@@ -1406,10 +1448,79 @@ class Terminal(tk.Toplevel):
             self.stop_bits
         ))
 
-        self.geometry("600x400")
+        self.geometry("800x600")
         self.attributes("-topmost", True)
+        self.minsize(200, 150)  # Минимальный размер окна для видимости кнопок
 
-        self.text = tk.Text(self, bg="black", fg="lime", insertbackground="lime")
+        # Инициализация состояний кнопок (цвета)
+        self.button_states = {
+            "EMPTY": "gray",  # Пустая кнопка с индикатором
+            "DTR": "white",   # Кнопки с текстом начинаются белыми
+            "RTS": "white",
+            "CTS": "white",
+            "DSR": "white",
+            "RI": "white",
+            "DCD": "white"
+        }
+
+        # Основной контейнер с горизонтальным layout
+        main_container = tk.Frame(self)
+        main_container.pack(fill="both", expand=True)
+
+        # Левая часть - кнопки DTR и RTS (вертикально)
+        left_buttons_frame = tk.Frame(main_container, bg="white", width=50)
+        left_buttons_frame.pack(side="left", fill="y", padx=2, pady=2)
+        left_buttons_frame.pack_propagate(False)
+        left_buttons_frame.config(width=50)  # Фиксированная ширина для видимости
+
+
+        # ===== EMPTY-кнопка над DTR =====
+        self.empty_pressed = True
+        self.locked = True
+
+        # Основной Frame кнопки
+        self.empty_button = tk.Frame(left_buttons_frame, bg="white", relief=tk.SUNKEN, borderwidth=2, width=40, height=28)
+        self.empty_button.pack(side="top", padx=3, pady=3)
+        self.empty_button.pack_propagate(False)
+
+        # Canvas для индикатора
+        self.empty_canvas = tk.Canvas(self.empty_button, width=18, height=8, bg="red", highlightthickness=1, highlightbackground="black")
+        self.empty_canvas.pack(expand=True, pady=3)
+
+        # Красный прямоугольник по умолчанию
+        self.empty_rect_id = self.empty_canvas.create_rectangle(0, 0, 18, 8, fill="red", outline="")
+
+        def on_empty_press(event=None):
+            self.empty_pressed = not self.empty_pressed
+
+            if self.empty_pressed:
+                self.empty_button.config(relief=tk.SUNKEN)
+                self.com._set_empty_state()
+            else:
+                self.empty_button.config(relief=tk.RAISED)
+                self.com.input_blocked = False
+
+            self.text.see("end")
+
+
+                # Запуск синхронизации UI с COM
+        self.after(100, self.sync_with_com)
+
+
+        # Привязываем toggle ко всем элементам кнопки
+        def bind_toggle(widget):
+            widget.bind("<Button-1>", on_empty_press)
+            for child in widget.winfo_children():
+                bind_toggle(child)
+
+        bind_toggle(self.empty_button)
+
+
+        # Текстовая область (после кнопок)
+        text_frame = tk.Frame(main_container)
+        text_frame.pack(side="left", fill="both", expand=True)
+
+        self.text = tk.Text(text_frame, bg="white", fg="black", insertbackground="black")
         self.text.pack(fill="both", expand=True)
 
         self.text.bind("<Key>", self.on_key)
@@ -1426,7 +1537,307 @@ class Terminal(tk.Toplevel):
         self.text.see("end")
         self.blink_cursor()
 
+        # Словарь для хранения индикаторов кнопок
+        self.button_indicators = {}
 
+        # Пустая кнопка (над DTR)
+        
+
+        # Кнопка DTR (сверху) - управляется только программно, не реагирует на клики
+        self.dtr_button, self.button_indicators["DTR"] = self.create_button_with_indicator(
+            left_buttons_frame, "DTR", "DTR", width=4, allow_manual_press=False
+        )
+        self.dtr_button.pack(side="top", padx=3, pady=3)
+
+        # Кнопка RTS (снизу от DTR) - управляется только программно, не реагирует на клики
+        self.rts_button, self.button_indicators["RTS"] = self.create_button_with_indicator(
+            left_buttons_frame, "RTS", "RTS", width=4, allow_manual_press=False
+        )
+        self.rts_button.pack(side="top", padx=3, pady=3)
+
+        # Устанавливаем состояние DTR и RTS в зависимости от настроек портменеджера
+        # Эти кнопки управляются только программно и не реагируют на клики пользователя
+        dtr_state = self.settings.get("dtr_state", "OFF")
+        rts_state = self.settings.get("rts_state", "OFF")
+        self.set_button_pressed("DTR", dtr_state == "ON")
+        self.set_button_pressed("RTS", rts_state == "ON")
+
+        # Нижняя панель с кнопками CTS, DSR, RI, DCD
+        bottom_buttons_frame = tk.Frame(self, bg="white", height=35)
+        bottom_buttons_frame.pack(side="bottom", fill="x", padx=2, pady=2)
+        bottom_buttons_frame.pack_propagate(False)
+        bottom_buttons_frame.config(height=35)  # Фиксированная высота для видимости
+
+        # Метка "State:"
+        state_label = tk.Label(bottom_buttons_frame, text="State:OPEN        ", bg="white", font=("Arial",8))
+        state_label.pack(side="left", padx=(5,3))
+
+        self.button_indicators = {}
+
+        for name in ["CTS","DSR","RI","DCD"]:
+            btn_frame = tk.Frame(bottom_buttons_frame, bg="white")  # контейнер для индикатора + текста
+            btn_frame.pack(side="left", padx=5, pady=2)
+
+            # Канва для индикатора
+            canvas = tk.Canvas(btn_frame, width=20, height=10, bg="white", highlightthickness=1, highlightbackground="black")
+            canvas.pack(side="top")
+            rect_id = canvas.create_rectangle(0, 0, 20, 10, fill="white", outline="")
+            canvas.rect_id = rect_id
+            canvas.indicator_width = 20
+            canvas.indicator_height = 10
+            self.button_indicators[name] = canvas
+
+            # Подпись под индикатором
+            label = tk.Label(btn_frame, text=name, bg="white", fg="black", font=("Arial", 7))
+            label.pack(side="top", pady=(2,0))
+
+        # Метка "Ready"
+        ready_label = tk.Label(
+            bottom_buttons_frame,
+            text="Ready                                                                                                                              ",
+            bg="white",
+            fg="black",
+            font=("Arial", 8)
+        )
+        ready_label.pack(side="left", padx=(10, 3), pady=3)
+
+        self.ready_label = ready_label
+
+        # Метка "TX:"
+        tx_label = tk.Label(
+            bottom_buttons_frame,
+            text="TX:0          ",
+            bg="white",
+            fg="black",
+            font=("Arial", 8)
+        )
+        tx_label.pack(side="left", padx=(5, 3), pady=3)
+
+        # Метка "RX:"
+        rx_label = tk.Label(
+            bottom_buttons_frame,
+            text="RX:0",
+            bg="white",
+            fg="black",
+            font=("Arial", 8)
+        )
+        rx_label.pack(side="left", padx=(5, 3), pady=3)
+
+    def sync_with_com(self):
+        """
+        Синхронизирует индикаторы и блокировки с состоянием COM
+        """
+
+        # === CTS / DSR / RI ===
+        self.set_button_color("CTS", self.com.cts)
+        self.set_button_color("DSR", self.com.dsr)
+        self.set_button_color("RI",  self.com.ri)
+
+        # === EMPTY / блокировка ввода ===
+        if self.com.input_blocked:
+            self.locked = True
+            self.ready_label.config(text="reset SW press %01")
+        else:
+            self.ready_label.config(text="Ready")
+
+        # === периодический апдейт ===
+        self.after(200, self.sync_with_com)
+
+    def create_button_with_indicator(self, parent, text, button_name, width=4, allow_manual_press=True):
+        """Создает кнопку с белым фоном, текстом и цветным индикатором"""
+        # Для пустой кнопки используем индикатор, для остальных - меняем цвет всего фона
+        use_indicator = (text == "")
+        
+        # Основной Frame кнопки
+        if use_indicator:
+            # Для пустой кнопки - белый фон с индикатором
+            button_frame = tk.Frame(parent, bg="white", relief=tk.RAISED, borderwidth=1)
+            current_bg = "white"
+        else:
+            # Для кнопок с текстом - фон меняется
+            button_frame = tk.Frame(parent, bg=self.button_states[button_name], relief=tk.RAISED, borderwidth=1)
+            current_bg = self.button_states[button_name]
+        
+        # Внутренний Frame для содержимого
+        inner_frame = tk.Frame(button_frame, bg=current_bg)
+        inner_frame.pack(fill="both", expand=True, padx=2, pady=2)
+        
+        # Текст (маленький шрифт)
+        if text:
+            text_label = tk.Label(
+                inner_frame,
+                text=text,
+                bg=current_bg,
+                fg="black",
+                font=("Arial", 7)
+            )
+            text_label.pack(side="top", pady=3)
+        
+        # Для пустой кнопки - цветной индикатор
+        if use_indicator:
+            indicator_width = max(18, width * 2)
+            indicator_height = 8
+            indicator_canvas = tk.Canvas(
+                inner_frame,
+                width=indicator_width,
+                height=indicator_height,
+                bg="white",
+                highlightthickness=0,
+                borderwidth=0
+            )
+            indicator_canvas.pack(side="top", pady=2)
+            
+            # Рисуем цветной прямоугольник
+            rect_id = indicator_canvas.create_rectangle(
+                0, 0, indicator_width, indicator_height,
+                fill=self.button_states[button_name],
+                outline="",
+                width=0
+            )
+            
+            # Сохраняем canvas и rect_id для обновления цвета
+            indicator_canvas.rect_id = rect_id
+            indicator_canvas.indicator_width = indicator_width
+            indicator_canvas.indicator_height = indicator_height
+            indicator = indicator_canvas
+        else:
+            indicator = None
+        
+        # Эффект нажатия только для кнопок, которые можно нажимать вручную
+        if allow_manual_press:
+            def on_press(event):
+                button_frame.config(relief=tk.SUNKEN)
+                button_frame.pressed = True
+            
+            def on_release(event):
+                if hasattr(button_frame, 'pressed'):
+                    button_frame.config(relief=tk.RAISED)
+                    button_frame.pressed = False
+            
+            def on_leave(event):
+                if hasattr(button_frame, 'pressed') and button_frame.pressed:
+                    button_frame.config(relief=tk.RAISED)
+                    button_frame.pressed = False
+            
+            # Привязываем эффект нажатия ко всем элементам кнопки
+            button_frame.bind("<Button-1>", on_press)
+            button_frame.bind("<ButtonRelease-1>", on_release)
+            button_frame.bind("<Leave>", on_leave)
+            inner_frame.bind("<Button-1>", on_press)
+            inner_frame.bind("<ButtonRelease-1>", on_release)
+            inner_frame.bind("<Leave>", on_leave)
+            if text:
+                text_label.bind("<Button-1>", on_press)
+                text_label.bind("<ButtonRelease-1>", on_release)
+                text_label.bind("<Leave>", on_leave)
+            if indicator:
+                indicator.bind("<Button-1>", on_press)
+                indicator.bind("<ButtonRelease-1>", on_release)
+                indicator.bind("<Leave>", on_leave)
+        
+        # Устанавливаем минимальный размер
+        button_frame.config(width=width*8, height=28)
+        button_frame.pack_propagate(False)
+        
+        # Сохраняем ссылку на button_frame для обновления цвета
+        button_frame.button_name = button_name
+        button_frame.use_indicator = use_indicator
+        
+        return button_frame, indicator
+    
+    def set_button_pressed(self, button_name: str, pressed: bool):
+        """Программно устанавливает состояние нажатия для кнопок DTR и RTS"""
+        button_map = {
+            "DTR": self.dtr_button,
+            "RTS": self.rts_button
+        }
+        
+        if button_name in button_map:
+            button_frame = button_map[button_name]
+            if pressed:
+                button_frame.config(relief=tk.SUNKEN)
+            else:
+                button_frame.config(relief=tk.RAISED)
+    
+    def set_button_color(self, button_name: str, color: str):
+        """Программно устанавливает цвет кнопки (для CTS, DSR, RI, DCD, EMPTY)"""
+        if color not in ["white", "gray", "green", "red", "orange", "yellow"]:
+            return
+        
+        self.button_states[button_name] = color
+        
+        # Для пустой кнопки обновляем только индикатор
+        if button_name == "EMPTY" and button_name in self.button_indicators:
+            indicator = self.button_indicators[button_name]
+            if indicator and hasattr(indicator, 'rect_id'):
+                indicator.itemconfig(indicator.rect_id, fill=color)
+        else:
+            # Для остальных кнопок обновляем цвет всего фона
+            button_map = {
+                "DTR": self.dtr_button,
+                "RTS": self.rts_button,
+                "CTS": self.cts_button,
+                "DSR": self.dsr_button,
+                "RI": self.ri_button,
+                "DCD": self.dcd_button
+            }
+            
+            if button_name in button_map:
+                button_frame = button_map[button_name]
+                button_frame.config(bg=color)
+                # Обновляем внутренний Frame и текст
+                for widget in button_frame.winfo_children():
+                    if isinstance(widget, tk.Frame):
+                        widget.config(bg=color)
+                        for child in widget.winfo_children():
+                            if isinstance(child, tk.Label):
+                                child.config(bg=color)
+
+    def toggle_button_color(self, button_name: str):
+        """Переключает цвет кнопки между состояниями: white -> gray -> green -> red -> orange -> yellow -> white"""
+        # Для пустой кнопки используем стандартную последовательность
+        if button_name == "EMPTY":
+            colors = ["gray", "green", "red", "orange", "yellow"]
+        else:
+            # Для кнопок с текстом: white -> gray -> green -> red -> orange -> yellow -> white
+            colors = ["white", "gray", "green", "red", "orange", "yellow"]
+        current_color = self.button_states[button_name]
+        
+        try:
+            current_index = colors.index(current_color)
+            next_index = (current_index + 1) % len(colors)
+        except ValueError:
+            next_index = 0
+        
+        new_color = colors[next_index]
+        self.button_states[button_name] = new_color
+        
+        # Для пустой кнопки обновляем только индикатор
+        if button_name == "EMPTY" and button_name in self.button_indicators:
+            indicator = self.button_indicators[button_name]
+            if indicator and hasattr(indicator, 'rect_id'):
+                indicator.itemconfig(indicator.rect_id, fill=new_color)
+        else:
+            # Для остальных кнопок обновляем цвет всего фона
+            button_map = {
+                "DTR": self.dtr_button,
+                "RTS": self.rts_button,
+                "CTS": self.cts_button,
+                "DSR": self.dsr_button,
+                "RI": self.ri_button,
+                "DCD": self.dcd_button
+            }
+            
+            if button_name in button_map:
+                button_frame = button_map[button_name]
+                button_frame.config(bg=new_color)
+                # Обновляем внутренний Frame и текст
+                for widget in button_frame.winfo_children():
+                    if isinstance(widget, tk.Frame):
+                        widget.config(bg=new_color)
+                        for child in widget.winfo_children():
+                            if isinstance(child, tk.Label):
+                                child.config(bg=new_color)
 
     def type_lines(self, text, index=0, done_callback=None):
         if index == 0:
@@ -1459,9 +1870,15 @@ class Terminal(tk.Toplevel):
         return self.text.get(self.input_start, "end-1c")
 
     def on_key(self, event):
+    # Если терминал выключен — ничего не делаем
+        if not self.empty_pressed:
+            return "break"
+
+        # Если соединение активно — ничего не делаем
         if self.com.connected:
             return "break"
 
+        # Прерывание continue режима
         if self.continue_mode:
             self.continue_mode = False
         if hasattr(self, "repeat_id") and self.repeat_id:
@@ -1473,19 +1890,25 @@ class Terminal(tk.Toplevel):
         self.text.mark_set("insert", "end")
         self.text.see("end")
 
+        # Проверяем, заблокирован ли терминал (до ввода стартовой последовательности)
         if self.locked:
             char = event.char.upper()
-            if not char or char.isspace():
+            if not char or char.isspace() or not self.com_config_valid:
                 return "break"
-            if char == self.sequence[self.sequence_index]:
+
+            # Безопасная проверка последовательности
+            if self.sequence_index < len(self.sequence) and char == self.sequence[self.sequence_index]:
                 self.sequence_index += 1
-                if self.sequence_index == len(self.sequence):
-                    self.locked = False
-                    self.type_lines(self.com.get_main_menu_text(), done_callback=self.put_message_prefix)
-                return "break"
+                if self.sequence_index >= len(self.sequence):
+                    self.locked = False 
+                    self.sequence_index = 0  
+                    self.type_lines(
+                        self.com.get_main_menu_text(),
+                        done_callback=self.put_message_prefix
+                    )
             else:
                 self.sequence_index = 0
-                return "break"
+            return "break"
 
         char = event.char
         if char and char.isprintable():
@@ -1518,6 +1941,10 @@ class Terminal(tk.Toplevel):
         self.repeat_id = self.after(CONTINUES_DELAY, self.repeat_output)
 
     def enter(self, event):
+        
+        if not self.empty_pressed:
+            return "break"
+
         if self.com.connected and self.com.role == "SLAVE":    
             return "break"
         
@@ -1695,12 +2122,33 @@ class WindowsXPApp:
         buttons_frame = Frame(toolbar, bg=self.COLORS["window_bg"], height=30)
         buttons_frame.pack(fill=X, side=TOP, padx=2, pady=2)
 
-        Button(buttons_frame, text="Settings", bg=self.COLORS["button_bg"], fg=self.COLORS["button_fg"],
-               font=self.FONTS["button"], relief=RAISED, command=self.show_property_dialog).pack(side=LEFT, padx=2)
-        Button(buttons_frame, text="Save", bg=self.COLORS["button_bg"], fg=self.COLORS["button_fg"],
-               font=self.FONTS["button"], relief=RAISED).pack(side=LEFT, padx=2)
-        Button(buttons_frame, text="Exit", bg=self.COLORS["button_bg"], fg=self.COLORS["button_fg"],
-               font=self.FONTS["button"], relief=RAISED, command=self.root.destroy).pack(side=LEFT, padx=2)
+        try:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            port_img = PhotoImage(file=os.path.join(base_dir, "images", "port.png"))
+            save_img = PhotoImage(file=os.path.join(base_dir, "images", "save.png"))
+            exit_img = PhotoImage(file=os.path.join(base_dir, "images", "exit.png"))
+        except Exception as e:
+            Button(buttons_frame, text="Settings", bg=self.COLORS["button_bg"], fg=self.COLORS["button_fg"],
+                   font=self.FONTS["button"], relief=RAISED, command=self.show_property_dialog).pack(side=LEFT, padx=2)
+            Button(buttons_frame, text="Save", bg=self.COLORS["button_bg"], fg=self.COLORS["button_fg"],
+                   font=self.FONTS["button"], relief=RAISED).pack(side=LEFT, padx=2)
+            Button(buttons_frame, text="Exit", bg=self.COLORS["button_bg"], fg=self.COLORS["button_fg"],
+                   font=self.FONTS["button"], relief=RAISED, command=self.root.destroy).pack(side=LEFT, padx=2)
+            return
+
+        self.port_img = port_img
+        self.save_img = save_img
+        self.exit_img = exit_img
+
+        # Кнопка Settings с изображением port.png
+        Button(buttons_frame, image=port_img, bg=self.COLORS["button_bg"],
+               relief=RAISED, command=self.show_property_dialog).pack(side=LEFT, padx=2)
+        # Кнопка Save с изображением save.png
+        Button(buttons_frame, image=save_img, bg=self.COLORS["button_bg"],
+               relief=RAISED).pack(side=LEFT, padx=2)
+        # Кнопка Exit с изображением exit.png
+        Button(buttons_frame, image=exit_img, bg=self.COLORS["button_bg"],
+               relief=RAISED, command=self.root.destroy).pack(side=LEFT, padx=2)
 
     def create_main_workspace(self):
         workspace = Frame(self.root, bg=self.COLORS["window_bg"])
@@ -1709,18 +2157,22 @@ class WindowsXPApp:
     def show_property_dialog(self):
         dialog = Toplevel(self.root)
         dialog.title("Open COM Port")
-        dialog.geometry("600x400")
+        dialog.geometry("540x550")
         dialog.configure(bg=self.COLORS["dialog_bg"])
         self.child_windows.append(dialog)
 
         outer_frame = Frame(dialog, bg=self.COLORS["border_dark"], borderwidth=1, relief=SOLID)
         outer_frame.pack(fill=BOTH, expand=True, padx=1, pady=1)
-        main_frame = Frame(outer_frame, bg=self.COLORS["dialog_bg"])
-        main_frame.pack(fill=BOTH, expand=True, padx=1, pady=1)
+        content_frame = Frame(outer_frame, bg=self.COLORS["dialog_bg"])
+        content_frame.pack(fill=BOTH, expand=True, padx=1, pady=(1, 0))
+
+        button_bar = Frame(outer_frame, bg=self.COLORS["dialog_bg"], height=40)
+        button_bar.pack(fill=X, side=BOTTOM, padx=1, pady=1)
+        button_bar.pack_propagate(False)
 
         # ------------------------
         # Левый блок - COM порты
-        left_frame = Frame(main_frame, bg=self.COLORS["dialog_bg"])
+        left_frame = Frame(content_frame, bg=self.COLORS["dialog_bg"])
         left_frame.pack(side=LEFT, fill=Y, padx=(10, 20), pady=10)
 
         Label(left_frame, text="Port:", bg=self.COLORS["dialog_bg"],
@@ -1738,7 +2190,7 @@ class WindowsXPApp:
         # ------------------------
         # Правый блок - параметры COM
         # ------------------------
-        right_frame = Frame(main_frame, bg=self.COLORS["dialog_bg"])
+        right_frame = Frame(content_frame, bg=self.COLORS["dialog_bg"])
         right_frame.pack(side=LEFT, fill=BOTH, expand=True, padx=10, pady=10)
 
         # Baud rate
@@ -1790,10 +2242,16 @@ class WindowsXPApp:
               font=self.FONTS["label"], width=15, anchor=W).pack(side=LEFT)
         flow_control_frame = Frame(flow_frame, bg=self.COLORS["dialog_bg"])
         flow_control_frame.pack(side=LEFT)
-        self.flow_var = StringVar(value="RTS/CTS")
-        for val in ["RTS/CTS","DTR/DSR","XON/XOFF"]:
-            Radiobutton(flow_control_frame, text=val, variable=self.flow_var, value=val,
-                        bg=self.COLORS["radio_bg"], fg=self.COLORS["label_fg"], font=self.FONTS["label"]).pack(anchor=W)
+        # Отдельные переменные для каждого варианта flow control (можно выбрать несколько)
+        self.flow_rts_cts_var = BooleanVar(value=True)
+        self.flow_dtr_dsr_var = BooleanVar(value=False)
+        self.flow_xon_xoff_var = BooleanVar(value=False)
+        Checkbutton(flow_control_frame, text="RTS/CTS", variable=self.flow_rts_cts_var,
+                    bg=self.COLORS["check_bg"], fg=self.COLORS["label_fg"], font=self.FONTS["label"]).pack(anchor=W)
+        Checkbutton(flow_control_frame, text="DTR/DSR", variable=self.flow_dtr_dsr_var,
+                    bg=self.COLORS["check_bg"], fg=self.COLORS["label_fg"], font=self.FONTS["label"]).pack(anchor=W)
+        Checkbutton(flow_control_frame, text="XON/XOFF", variable=self.flow_xon_xoff_var,
+                    bg=self.COLORS["check_bg"], fg=self.COLORS["label_fg"], font=self.FONTS["label"]).pack(anchor=W)
 
         # RTS/DTR
         state_frame = Frame(right_frame, bg=self.COLORS["dialog_bg"])
@@ -1828,15 +2286,25 @@ class WindowsXPApp:
         # ------------------------
         # Кнопки диалога
         # ------------------------
-        button_frame = Frame(main_frame, bg=self.COLORS["dialog_bg"])
-        button_frame.pack(fill=X, pady=10)
-        Frame(button_frame, bg=self.COLORS["dialog_bg"]).pack(side=LEFT, expand=True)
 
-        self.ok_button = Button(button_frame, text="OK", width=10,
-                                command=lambda: self.open_terminal(dialog))
-        self.ok_button.pack(side=LEFT, padx=5)
-        Button(button_frame, text="Cancel", width=10, command=dialog.destroy).pack(side=LEFT, padx=5)
+        Frame(button_bar, bg=self.COLORS["dialog_bg"]).pack(side=LEFT, expand=True)
 
+        self.ok_button = Button(
+            button_bar,
+            text="OK",
+            width=10,
+            font=self.FONTS["button"],
+            command=lambda: self.open_terminal(dialog)
+        )
+        self.ok_button.pack(side=RIGHT, padx=6, pady=6)
+
+        Button(
+            button_bar,
+            text="Cancel",
+            width=10,
+            font=self.FONTS["button"],
+            command=dialog.destroy
+        ).pack(side=RIGHT, padx=6, pady=6)
         # ------------------------
         # Логика блокировки кнопки OK
         # ------------------------
@@ -1872,11 +2340,19 @@ class WindowsXPApp:
         "baud_rate": self.baud_var.get(),
         "data_bits": self.data_var.get(),
         "parity": self.parity_var.get(),
-        "stop_bits": self.stop_var.get()
-    }
+        "stop_bits": self.stop_var.get(),
+        "dtr_state": self.dtr_var.get(),
+        "rts_state": self.rts_var.get()
+        }
 
         term = Terminal(self.root, com=com_obj, settings=settings,)
         self.terminals[port] = term
+        term.com_config_valid = (
+        term.baud_rate == "9600" and
+        term.data_bits == "8" and
+        term.parity == "None" and
+        term.stop_bits == "1"
+        )
 
         def on_close():
             try:
